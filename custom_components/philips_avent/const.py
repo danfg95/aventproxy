@@ -86,23 +86,38 @@ DPS_NO_SENSEIQ_SIGNAL = "15"   # no_senseiq_signal (bool) True when SenseIQ has 
                                # signal (no baby detected / "scanning crib")
 DPS_DEVICE_ERRORS = "18"       # device_errors   (value) 0 = no error
 
+# The 15 tracks, in id order, which is also the order Next steps through them.
+LULLABY_CATALOGUE = (
+    ("Baa Baa Black Sheep", "lullabies"),
+    ("Brahms' Lullaby", "lullabies"),
+    ("Rock-a-Bye Baby", "lullabies"),
+    ("Golden Slumbers", "lullabies"),
+    ("Hush Little Baby", "lullabies"),
+    ("Mother's Shh", "noise"),
+    ("Calming River", "noise"),
+    ("Heartbeat", "noise"),
+    ("Vacuum Cleaner", "noise"),
+    ("White Noise", "noise"),
+    ("Garden Bird Song", "nature_sounds"),
+    ("Valley Wind", "nature_sounds"),
+    ("Ocean Shore", "nature_sounds"),
+    ("Night-time Nature", "nature_sounds"),
+    ("Rain Shower", "nature_sounds"),
+)
+# First id of each block the catalogue is published under. Units of the same
+# product (kzm54lhabeeucq5a) report different blocks: the original SCD973 uses
+# 3542154-3542168, a unit on firmware 1.1.12 uses 12072916-12072930 (issue #91).
+# A camera ignores DPS 202 with an id outside its own block and keeps playing.
+LULLABY_BLOCK_STARTS = (3542154, 12072916)
 LULLABY_TRACK_MAP = {
-    3542154: ("Baa Baa Black Sheep", "lullabies"),
-    3542155: ("Brahms' Lullaby", "lullabies"),
-    3542156: ("Rock-a-Bye Baby", "lullabies"),
-    3542157: ("Golden Slumbers", "lullabies"),
-    3542158: ("Hush Little Baby", "lullabies"),
-    3542159: ("Mother's Shh", "noise"),
-    3542160: ("Calming River", "noise"),
-    3542161: ("Heartbeat", "noise"),
-    3542162: ("Vacuum Cleaner", "noise"),
-    3542163: ("White Noise", "noise"),
-    3542164: ("Garden Bird Song", "nature_sounds"),
-    3542165: ("Valley Wind", "nature_sounds"),
-    3542166: ("Ocean Shore", "nature_sounds"),
-    3542167: ("Night-time Nature", "nature_sounds"),
-    3542168: ("Rain Shower", "nature_sounds"),
+    start + index: track
+    for start in LULLABY_BLOCK_STARTS
+    for index, track in enumerate(LULLABY_CATALOGUE)
 }
+# Next and Prev move relative to the current track, so delivering one twice
+# moves two tracks. The cloud forwards a published DPS to the camera, which is
+# why a step already sent over the LAN must not be mirrored there (issue #91).
+LULLABY_STEP_COMMANDS = frozenset({"next", "prev"})
 
 TIMER_OPTIONS = {
     "Off": 0,
@@ -115,8 +130,7 @@ TIMER_OPTIONS = {
 }
 TIMER_SECONDS_TO_LABEL = {v: k for k, v in TIMER_OPTIONS.items()}
 
-LULLABY_TRACKS = [name for name, _ in LULLABY_TRACK_MAP.values()]
-LULLABY_ID_BY_NAME = {name: tid for tid, (name, _) in LULLABY_TRACK_MAP.items()}
+LULLABY_TRACKS = [name for name, _ in LULLABY_CATALOGUE]
 
 CONF_SID = "sid"
 CONF_API_HOST = "api_host"
@@ -137,6 +151,35 @@ DEFAULT_BRIDGE_HOST = "localhost"
 # (issue #72), so listening must not imply talking.
 CONF_TALKBACK = "talkback"
 DEFAULT_TALKBACK = False
+
+
+def lullaby_track_id(name: str, current_id: int | None) -> int | None:
+    """The id to send in DPS 202 to play `name` on this camera.
+
+    The block is taken from the id the camera last reported in DPS 248, since
+    that is the only sign of which catalogue it holds. With nothing reported
+    yet, the original block is assumed, which is what every release before
+    issue #91 sent.
+    """
+    if name not in LULLABY_TRACKS:
+        return None
+    start = LULLABY_BLOCK_STARTS[0]
+    if isinstance(current_id, int):
+        for block in LULLABY_BLOCK_STARTS:
+            if block <= current_id < block + len(LULLABY_CATALOGUE):
+                start = block
+                break
+    return start + LULLABY_TRACKS.index(name)
+
+
+def mirror_dps_to_cloud(dps: dict) -> bool:
+    """Whether a command the LAN already delivered should also go to the cloud.
+
+    The mirror keeps the cloud state in step, which is harmless for values and
+    for play, pause and stop. A relative step is not idempotent, and the cloud
+    forwards it to the camera, so Next would advance two tracks (issue #91).
+    """
+    return dps.get(DPS_LULLABY_CONTROL) not in LULLABY_STEP_COMMANDS
 
 
 def sanitize_rtsp_path(name: str, cam_id: str) -> str:

@@ -17,7 +17,13 @@ from homeassistant.util.dt import utcnow
 
 from . import senseiq
 from .api import PhilipsAventAPI, TuyaAPIError
-from .const import DPS_ALARM_RECORD, DPS_LULLABY_CONTROL, DPS_LULLABY_STATE, DPS_SENSEIQ_STATUS
+from .const import (
+    DPS_ALARM_RECORD,
+    DPS_LULLABY_CONTROL,
+    DPS_LULLABY_STATE,
+    DPS_SENSEIQ_STATUS,
+    mirror_dps_to_cloud,
+)
 from .events import LULLABY_SETTLE_SECONDS, lullaby_state_settled, poll_should_stay_fast
 from .lan import TuyaLANClient
 from .payload import dps_delta, truncated_dps
@@ -165,7 +171,11 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         self.async_set_updated_data({**self.data, DPS_LULLABY_STATE: value})
 
     async def set_dps(self, dps: dict) -> dict:
-        """Send DPS command via LAN for instant response, plus REST for cloud sync."""
+        """Send DPS command via LAN for instant response, plus REST for cloud sync.
+
+        Relative lullaby steps skip the REST mirror after a LAN success; see
+        `mirror_dps_to_cloud`.
+        """
         if self._lan_client and self._lan_client.connected:
             result = await self._lan_client.set_dps(dps)
             if result:
@@ -176,8 +186,9 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
                     if lullaby_cmd in LULLABY_STATE_MAP:
                         optimistic[DPS_LULLABY_STATE] = LULLABY_STATE_MAP[lullaby_cmd]
                     self.async_set_updated_data({**self.data, **optimistic})
-                with contextlib.suppress(TuyaAPIError):
-                    await self.api.set_dps(self.camera_id, dps)
+                if mirror_dps_to_cloud(dps):
+                    with contextlib.suppress(TuyaAPIError):
+                        await self.api.set_dps(self.camera_id, dps)
                 return result
         if self.data is not None:
             optimistic = {str(k): v for k, v in dps.items()}

@@ -18,11 +18,11 @@ from .const import (
     DPS_LULLABY_MODE,
     DPS_LULLABY_TIMER,
     DPS_LULLABY_TIMER_SWITCH,
-    LULLABY_ID_BY_NAME,
     LULLABY_TRACK_MAP,
     LULLABY_TRACKS,
     TIMER_OPTIONS,
     TIMER_SECONDS_TO_LABEL,
+    lullaby_track_id,
 )
 from .coordinator import PhilipsAventCoordinator
 from .entity import build_device_info
@@ -66,22 +66,24 @@ class AventLullabySelect(CoordinatorEntity, SelectEntity):
         self._attr_unique_id = f"{cam_id}_lullaby_track"
         self._attr_device_info = build_device_info(coordinator, cam_id)
 
-    @property
-    def current_option(self) -> str | None:
+    def _current_track_id(self) -> int | None:
+        """The track id the camera last reported in DPS 248, if any."""
         dps = self.coordinator.data
         if not dps or "248" not in dps:
             return None
         try:
-            info = json.loads(dps["248"])
-            track_id = info.get("id")
-            if track_id in LULLABY_TRACK_MAP:
-                return LULLABY_TRACK_MAP[track_id][0]
-        except (json.JSONDecodeError, TypeError):
-            pass
-        return None
+            track_id = json.loads(dps["248"]).get("id")
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return None
+        return track_id if isinstance(track_id, int) else None
+
+    @property
+    def current_option(self) -> str | None:
+        track = LULLABY_TRACK_MAP.get(self._current_track_id())
+        return track[0] if track else None
 
     async def async_select_option(self, option: str) -> None:
-        track_id = LULLABY_ID_BY_NAME.get(option)
+        track_id = lullaby_track_id(option, self._current_track_id())
         if track_id is None:
             return
         await self.coordinator.set_dps({

@@ -18,11 +18,14 @@ from const import (
     DPS_PRIVACY_MODE,
     DPS_SOUND_SWITCH,
     DPS_TEMPERATURE,
-    LULLABY_ID_BY_NAME,
+    LULLABY_BLOCK_STARTS,
+    LULLABY_CATALOGUE,
     LULLABY_TRACK_MAP,
     LULLABY_TRACKS,
     TIMER_OPTIONS,
     TIMER_SECONDS_TO_LABEL,
+    lullaby_track_id,
+    mirror_dps_to_cloud,
 )
 
 
@@ -128,7 +131,8 @@ class TestLullabySelect:
     """Test lullaby track selection as used by AventLullabySelect."""
 
     def test_track_count(self):
-        assert len(LULLABY_TRACK_MAP) == 15
+        assert len(LULLABY_CATALOGUE) == 15
+        assert len(LULLABY_TRACK_MAP) == 15 * len(LULLABY_BLOCK_STARTS)
 
     def test_all_tracks_have_name_and_category(self):
         for track_id, (name, category) in LULLABY_TRACK_MAP.items():
@@ -140,18 +144,54 @@ class TestLullabySelect:
         assert len(LULLABY_TRACKS) == 15
         assert set(LULLABY_TRACKS) == {name for name, _ in LULLABY_TRACK_MAP.values()}
 
-    def test_id_by_name_lookup(self):
-        assert LULLABY_ID_BY_NAME["Brahms' Lullaby"] == 3542155
-        assert LULLABY_ID_BY_NAME["White Noise"] == 3542163
-        assert LULLABY_ID_BY_NAME["Rain Shower"] == 3542168
-
-    def test_id_by_name_covers_all_tracks(self):
-        for track_id, (name, _) in LULLABY_TRACK_MAP.items():
-            assert LULLABY_ID_BY_NAME[name] == track_id
-
     def test_track_names_unique(self):
-        names = [name for name, _ in LULLABY_TRACK_MAP.values()]
-        assert len(names) == len(set(names))
+        assert len(LULLABY_TRACKS) == len(set(LULLABY_TRACKS))
+
+    def test_original_block_names(self):
+        assert LULLABY_TRACK_MAP[3542154][0] == "Baa Baa Black Sheep"
+        assert LULLABY_TRACK_MAP[3542163][0] == "White Noise"
+        assert LULLABY_TRACK_MAP[3542168][0] == "Rain Shower"
+
+    def test_firmware_1_1_12_block_names(self):
+        # Issue #91: a kzm54lhabeeucq5a unit on firmware 1.1.12 reports these.
+        assert LULLABY_TRACK_MAP[12072916][0] == "Baa Baa Black Sheep"
+        assert LULLABY_TRACK_MAP[12072925][0] == "White Noise"
+        assert LULLABY_TRACK_MAP[12072930][0] == "Rain Shower"
+
+    def test_blocks_do_not_overlap(self):
+        assert 3542168 + 1 not in LULLABY_TRACK_MAP
+        assert 12072916 - 1 not in LULLABY_TRACK_MAP
+
+    def test_id_follows_the_block_the_camera_reports(self):
+        assert lullaby_track_id("White Noise", 3542160) == 3542163
+        assert lullaby_track_id("White Noise", 12072925) == 12072925
+        assert lullaby_track_id("Rain Shower", 12072916) == 12072930
+
+    def test_id_defaults_to_original_block(self):
+        assert lullaby_track_id("Brahms' Lullaby", None) == 3542155
+        assert lullaby_track_id("Brahms' Lullaby", 999) == 3542155
+
+    def test_id_round_trips_in_every_block(self):
+        for start in LULLABY_BLOCK_STARTS:
+            for name in LULLABY_TRACKS:
+                assert LULLABY_TRACK_MAP[lullaby_track_id(name, start)][0] == name
+
+    def test_unknown_name(self):
+        assert lullaby_track_id("Not A Track", 3542154) is None
+
+
+class TestCloudMirror:
+    """Test which LAN commands are also published to the cloud (issue #91)."""
+
+    def test_steps_are_not_mirrored(self):
+        assert not mirror_dps_to_cloud({DPS_LULLABY_CONTROL: "next"})
+        assert not mirror_dps_to_cloud({DPS_LULLABY_CONTROL: "prev"})
+
+    def test_idempotent_commands_are_mirrored(self):
+        for action in ("play", "pause", "stop"):
+            assert mirror_dps_to_cloud({DPS_LULLABY_CONTROL: action})
+        assert mirror_dps_to_cloud({DPS_NIGHT_LIGHT: True})
+        assert mirror_dps_to_cloud({"202": "{}", DPS_LULLABY_CONTROL: "play"})
 
 
 class TestTimerOptions:
