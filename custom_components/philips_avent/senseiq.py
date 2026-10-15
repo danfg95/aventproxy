@@ -121,6 +121,33 @@ def decode_status(raw: object) -> dict | None:
 PRESENCE_ABSENT_STATES = frozenset({"o"})
 
 
+# A monitor that sends its live status (DPS 3) over the LAN does so every 1 to
+# 10 seconds while the baby is in the SenseIQ zone, and simply stops when the
+# baby leaves: nothing announces the change until the cloud does, if it does
+# (issue #74). A minute without a push therefore means the status on show is
+# stale; the cadence and the value come from an SCD923 owner's fork.
+STATUS_STALE_AFTER_SECONDS = 60
+
+
+def status_is_stale(
+    lan_connected: bool,
+    last_status_push: float | None,
+    now: float,
+    stale_after: float = STATUS_STALE_AFTER_SECONDS,
+) -> bool:
+    """Whether the DPS 3 value on show can no longer be trusted.
+
+    Judged only while the LAN session is up, and only on a monitor that has
+    pushed DPS 3 over it. Without pushes there is no heartbeat to miss: on a
+    cloud-only install, or on a monitor that never pushes DPS 3, the status
+    arrives with each poll, and presence must not drop after a minute while the
+    baby is still in the crib.
+    """
+    if not lan_connected or last_status_push is None:
+        return False
+    return now - last_status_push > stale_after
+
+
 def is_baby_present(raw: object) -> bool | None:
     """Whether SenseIQ currently sees the baby, from DPS 3.
 

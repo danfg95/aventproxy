@@ -141,3 +141,28 @@ def test_decode_sleep_day_rejects_empty():
     assert senseiq.decode_sleep_day([]) is None
     assert senseiq.decode_sleep_day(None) is None
     assert senseiq.decode_sleep_day([{"dt": 20260916, "sessions": []}]) is None
+
+
+class TestStatusStaleness:
+    """When the LAN pushes of DPS 3 stop, the last status must not linger (#74)."""
+
+    def test_fresh_push_is_not_stale(self):
+        assert not senseiq.status_is_stale(True, last_status_push=100.0, now=130.0)
+
+    def test_a_minute_without_a_push_is_stale(self):
+        assert senseiq.status_is_stale(True, last_status_push=100.0, now=161.0)
+
+    def test_exactly_at_the_window_is_not_stale_yet(self):
+        assert not senseiq.status_is_stale(True, last_status_push=100.0, now=160.0)
+
+    def test_never_judged_without_a_lan_session(self):
+        # Cloud-only: DPS 3 comes with each poll, so there is no heartbeat to miss.
+        assert not senseiq.status_is_stale(False, last_status_push=100.0, now=10_000.0)
+
+    def test_never_judged_on_a_monitor_that_never_pushed_dps3(self):
+        # A monitor whose LAN session never carries DPS 3 must keep its presence.
+        assert not senseiq.status_is_stale(True, last_status_push=None, now=10_000.0)
+
+    def test_window_is_configurable(self):
+        assert senseiq.status_is_stale(True, last_status_push=0.0, now=11.0, stale_after=10)
+

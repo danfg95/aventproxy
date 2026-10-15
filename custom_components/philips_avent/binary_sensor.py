@@ -196,7 +196,12 @@ class AventBabyDetected(CoordinatorEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool | None:
-        return senseiq.is_baby_present((self.coordinator.data or {}).get(DPS_SENSEIQ_STATUS))
+        present = senseiq.is_baby_present((self.coordinator.data or {}).get(DPS_SENSEIQ_STATUS))
+        # When the LAN pushes stop, the last "present" value stays in the merged
+        # state; past the staleness window it means the baby has left (#74).
+        if present and self.coordinator.senseiq_status_stale:
+            return False
+        return present
 
 
 class AventSoundDetected(CoordinatorEntity, BinarySensorEntity):

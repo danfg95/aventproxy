@@ -73,6 +73,10 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
         self._pending_lullaby: str | None = None
         self._pending_lullaby_since: float | None = None
         self._lullaby_unsub = None
+        # Monotonic time of the last DPS 3 (SenseIQ status) LAN push, and the
+        # timer that re-evaluates entities once it would go stale.
+        self._senseiq_pushed_at: float | None = None
+        self._senseiq_stale_unsub = None
         self._rssi_refreshed_at = None
         # SenseIQ nightly sleep summary (cloud aggregate), decoded in senseiq.py.
         self.sleep_day: dict | None = None
@@ -91,6 +95,9 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
 
     async def stop_lan(self) -> None:
         self._cancel_pending_lullaby()
+        if self._senseiq_stale_unsub:
+            self._senseiq_stale_unsub()
+            self._senseiq_stale_unsub = None
         if self._lan_client:
             await self._lan_client.stop()
             self._lan_client = None
@@ -98,6 +105,34 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
     @property
     def lan_connected(self) -> bool:
         return self._lan_client is not None and self._lan_client.connected
+
+    @property
+    def senseiq_status_stale(self) -> bool:
+        """Whether the SenseIQ live status has stopped arriving; see senseiq.status_is_stale."""
+        return senseiq.status_is_stale(self.lan_connected, self._senseiq_pushed_at, time.monotonic())
+
+    @callback
+    def _note_senseiq_push(self) -> None:
+        """Record a DPS 3 push and re-check the entities once it would go stale.
+
+        Without the timer nothing would re-evaluate Baby Detected after the
+        pushes stop, until some unrelated update or the next poll arrived.
+        """
+        self._senseiq_pushed_at = time.monotonic()
+        if self._senseiq_stale_unsub:
+            self._senseiq_stale_unsub()
+        self._senseiq_stale_unsub = async_call_later(
+            self.hass, senseiq.STATUS_STALE_AFTER_SECONDS + 1, self._senseiq_went_stale
+        )
+
+    @callback
+    def _senseiq_went_stale(self, _now=None) -> None:
+        self._senseiq_stale_unsub = None
+        _LOGGER.debug(
+            "SenseIQ status for %s went stale after %ss without a push",
+            self.camera_name, senseiq.STATUS_STALE_AFTER_SECONDS,
+        )
+        self.async_update_listeners()
 
     @callback
     def _on_lan_dps_update(self, dps: dict[str, Any]) -> None:
@@ -109,6 +144,8 @@ class PhilipsAventCoordinator(DataUpdateCoordinator):
             "LAN push for %s: %s", self.camera_name, truncated_dps(dps)
         )
 
+        if DPS_SENSEIQ_STATUS in dps:
+            self._note_senseiq_push()
         dps = self._hold_lullaby_state(dps)
         merged = {**self.data, **dps}
         self.async_set_updated_data(merged)

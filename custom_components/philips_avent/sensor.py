@@ -140,6 +140,10 @@ class _SenseIQEntity(CoordinatorEntity, SensorEntity):
         self._attr_device_info = build_device_info(coordinator, cam_id)
 
     def _status(self) -> dict | None:
+        # A stale status would keep showing the last breathing rate after the
+        # baby has gone, so it reads as unknown instead (issue #74).
+        if self.coordinator.senseiq_status_stale:
+            return None
         return senseiq.decode_status(
             (self.coordinator.data or {}).get(DPS_SENSEIQ_STATUS)
         )
