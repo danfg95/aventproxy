@@ -6,8 +6,8 @@ Stay on the stable card unless you are testing an rc.
 ## 2026.10.1-rc2
 
 The bridge is unchanged from rc1. In the integration, SenseIQ entities now
-appear when their data first arrives, so monitors that send SenseIQ data only
-over the LAN (the SCD923) get them too. Please report on #74.
+appear when their data first arrives, not only at startup, so data that shows
+up after Home Assistant starts still gets its entities. Please report on #74.
 
 ## 2026.10.1-rc1
 
