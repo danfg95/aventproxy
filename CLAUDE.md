@@ -83,7 +83,7 @@ device id is persisted in the config entry rather than regenerated per run.
 
 GitHub Actions (`.github/workflows/ci.yml`):
 - Python tests on 3.11, 3.12, 3.13 with ruff lint
-- Go bridge: `gofmt` check, build and `go test ./...` with Go 1.26
+- Go bridge: `gofmt` check, build and `go test ./...` with Go 1.27
 - Docker add-on build verification
 
 Release workflow (`release.yml`): version pattern `YEAR.MONTH.INCREMENT`, multi-arch (amd64+arm64), pushes to `ghcr.io/thekoma/aventproxy-bridge`. Types: `release`, `rc`, `beta`, `dev`. Only `dev` skips the GitHub release step, via the `publish_release` output. Pushes touching `.github/workflows/` need the SSH remote, since the HTTPS token has no `workflow` scope.
@@ -118,6 +118,6 @@ because Tuya returns cameras (with their `localKey`) as a list.
   needs a `# noqa: BLE001 - <reason>`; the existing ones sit on teardown paths, callback boundaries
   and tinytuya calls. Scripts under `tools/` and `examples/` are exempt via per-file-ignores
 - Go 1.23, static build (`CGO_ENABLED=0`). CI gates `gofmt -l` and runs `go test ./...`, so format
-  before pushing: `docker run --rm -v $PWD:/src -w /src golang:1.26-bookworm gofmt -w .` from
+  before pushing: `docker run --rm -v $PWD:/src -w /src golang:1.27-bookworm gofmt -w .` from
   `avent-webrtc-bridge/`
 - Reverse-engineering notes and methodology in `WHITEPAPER.md`
