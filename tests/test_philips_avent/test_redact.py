@@ -34,6 +34,12 @@ class TestFlatDicts:
         out = redact_secrets({"gid": 123, "lat": "45.4", "lon": "9.1"})
         assert out == {"gid": 123, "lat": "**REDACTED**", "lon": "**REDACTED**"}
 
+    def test_public_ip_is_redacted(self):
+        # The cloud's device record carries the address it sees the camera
+        # from, which is the household's public IP (issue #91).
+        out = redact_secrets({"devId": "bf1", "ip": "203.0.113.7", "verSw": "1.1.12"})
+        assert out == {"devId": "bf1", "ip": "**REDACTED**", "verSw": "1.1.12"}
+
 
 class TestNesting:
     def test_recurses_into_nested_dicts(self):
