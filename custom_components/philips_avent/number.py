@@ -1,6 +1,8 @@
 """Number entities for Philips Avent Baby Monitor."""
 from __future__ import annotations
 
+from functools import partial
+
 from homeassistant.components.number import NumberEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -14,7 +16,7 @@ from .const import (
     DPS_LULLABY_VOLUME,
 )
 from .coordinator import PhilipsAventCoordinator
-from .entity import build_device_info
+from .entity import add_entities_when_ready, build_device_info, dps_present
 
 
 async def async_setup_entry(
@@ -28,12 +30,16 @@ async def async_setup_entry(
             AventNumber(coordinator, cam_id, DPS_LULLABY_VOLUME, None, "mdi:volume-medium", 1, 100, 1, "%", translation_key="lullaby_volume"),
         ])
         # SenseIQ: delay before the "baby awake" alert fires (seconds).
-        dps = coordinator.data or {}
-        if DPS_AWAKE_DELAY in dps:
-            entities.append(
-                AventNumber(coordinator, cam_id, DPS_AWAKE_DELAY, None, "mdi:timer-outline", 0, 600, 30, "s", translation_key="awake_alert_delay")
-            )
+        add_entities_when_ready(coordinator, async_add_entities, [
+            (dps_present(DPS_AWAKE_DELAY), partial(_awake_delay, coordinator, cam_id)),
+        ], entry.async_on_unload)
     async_add_entities(entities)
+
+
+def _awake_delay(coordinator: PhilipsAventCoordinator, cam_id: str) -> list:
+    return [
+        AventNumber(coordinator, cam_id, DPS_AWAKE_DELAY, None, "mdi:timer-outline", 0, 600, 30, "s", translation_key="awake_alert_delay")
+    ]
 
 
 class AventNumber(CoordinatorEntity, NumberEntity):

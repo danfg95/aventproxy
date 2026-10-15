@@ -1,6 +1,7 @@
 """Switch entities for Philips Avent Baby Monitor."""
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
@@ -20,7 +21,7 @@ from .const import (
     DPS_SOUND_SWITCH,
 )
 from .coordinator import PhilipsAventCoordinator
-from .entity import build_device_info
+from .entity import add_entities_when_ready, build_device_info, dps_present
 
 
 async def async_setup_entry(
@@ -37,14 +38,19 @@ async def async_setup_entry(
         ])
         # SenseIQ controls, each gated on its own data point so a monitor that
         # exposes only some of them still gets the right entities.
-        dps = coordinator.data or {}
-        if DPS_SENSEIQ_SWITCH in dps:
-            entities.append(AventSwitch(coordinator, cam_id, DPS_SENSEIQ_SWITCH, None, "mdi:baby-face-outline", translation_key="senseiq"))
-        if DPS_AWAKE_SWITCH in dps:
-            entities.append(AventSwitch(coordinator, cam_id, DPS_AWAKE_SWITCH, None, "mdi:sleep-off", translation_key="awake_alert"))
-        if DPS_CRY_DET_SWITCH in dps:
-            entities.append(AventSwitch(coordinator, cam_id, DPS_CRY_DET_SWITCH, None, "mdi:emoticon-cry-outline", translation_key="cry_alert"))
+        add_entities_when_ready(coordinator, async_add_entities, [
+            (dps_present(dps_id), partial(_senseiq_switch, coordinator, cam_id, dps_id, icon, key))
+            for dps_id, icon, key in (
+                (DPS_SENSEIQ_SWITCH, "mdi:baby-face-outline", "senseiq"),
+                (DPS_AWAKE_SWITCH, "mdi:sleep-off", "awake_alert"),
+                (DPS_CRY_DET_SWITCH, "mdi:emoticon-cry-outline", "cry_alert"),
+            )
+        ], entry.async_on_unload)
     async_add_entities(entities)
+
+
+def _senseiq_switch(coordinator: PhilipsAventCoordinator, cam_id: str, dps_id: str, icon: str, key: str) -> list:
+    return [AventSwitch(coordinator, cam_id, dps_id, None, icon, translation_key=key)]
 
 
 class AventSwitch(CoordinatorEntity, SwitchEntity):

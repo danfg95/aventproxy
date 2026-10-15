@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+from functools import partial
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -26,7 +27,7 @@ from .const import (
     DPS_SENSEIQ_STATUS,
 )
 from .coordinator import PhilipsAventCoordinator
-from .entity import build_device_info
+from .entity import add_entities_when_ready, build_device_info, dps_present
 from .events import (
     cry_event_timestamp,
     is_new_event,
@@ -50,13 +51,17 @@ async def async_setup_entry(
             AventMotionDetected(coordinator, cam_id),
             AventSoundDetected(coordinator, cam_id),
         ])
-        # SenseIQ presence, from the live status (DPS 3).
-        if DPS_SENSEIQ_STATUS in (coordinator.data or {}):
-            entities.append(AventBabyDetected(coordinator, cam_id))
-        # Dedicated crying alert, on monitors advertising cry detection (DPS 12).
-        if DPS_CRY_DET_SWITCH in (coordinator.data or {}):
-            entities.append(AventCryDetected(coordinator, cam_id))
+        add_entities_when_ready(coordinator, async_add_entities, [
+            # SenseIQ presence, from the live status (DPS 3).
+            (dps_present(DPS_SENSEIQ_STATUS), partial(_one, AventBabyDetected, coordinator, cam_id)),
+            # Dedicated crying alert, on monitors advertising cry detection (DPS 12).
+            (dps_present(DPS_CRY_DET_SWITCH), partial(_one, AventCryDetected, coordinator, cam_id)),
+        ], entry.async_on_unload)
     async_add_entities(entities)
+
+
+def _one(cls, coordinator: PhilipsAventCoordinator, cam_id: str) -> list:
+    return [cls(coordinator, cam_id)]
 
 
 class AventLullabyPlaying(CoordinatorEntity, BinarySensorEntity):

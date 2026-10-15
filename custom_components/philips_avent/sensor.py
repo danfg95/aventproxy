@@ -28,7 +28,7 @@ from .const import (
     DPS_TEMPERATURE,
 )
 from .coordinator import PhilipsAventCoordinator
-from .entity import build_device_info
+from .entity import add_entities_when_ready, build_device_info, dps_present
 
 SLEEP_STAGE_OPTIONS = list(senseiq.SLEEP_STAGES)
 
@@ -42,39 +42,49 @@ async def async_setup_entry(
     for cam_id, coordinator in data["coordinators"].items():
         entities.append(AventTemperatureSensor(coordinator, cam_id))
         entities.append(AventWifiSignalSensor(coordinator, cam_id))
-
-        dps = coordinator.data or {}
-
-        # Create the SenseIQ entities only on monitors that actually expose the
-        # corresponding DPS. DPS 4 may contain a persisted completed session;
-        # entity creation must therefore depend on "decodable", not "active".
-        if senseiq.decode_status(dps.get(DPS_SENSEIQ_STATUS)) is not None:
-            entities.append(AventBreathingSensor(coordinator, cam_id))
-            entities.append(AventSenseIQStateSensor(coordinator, cam_id))
-
-        if senseiq.decode_sleep_session(dps.get(DPS_SLEEP_SESSION)) is not None:
-            entities.append(AventSleepStartSensor(coordinator, cam_id))
-            entities.append(AventSleepDurationSensor(coordinator, cam_id))
-            entities.append(AventSleepStageSensor(coordinator, cam_id))
-
-        if DPS_DEVICE_ERRORS in dps:
-            entities.append(AventDeviceErrorsSensor(coordinator, cam_id))
-
-        # Nightly sleep summary from the SenseIQ cloud aggregate. Accurate,
-        # full-night figures (unlike DPS 4 which resets mid-night). Created for
-        # SenseIQ monitors; the values fill in on the first cloud fetch.
-        if DPS_SENSEIQ_STATUS in dps:
-            entities.append(AventNightSleepSensor(coordinator, cam_id))
-            entities.append(AventNightDurationSensor(
-                coordinator, cam_id, "night_in_bed", "in_bed_seconds", "mdi:bed"))
-            entities.append(AventNightDurationSensor(
-                coordinator, cam_id, "night_deep_sleep", "deep_seconds", "mdi:sleep"))
-            entities.append(AventNightDurationSensor(
-                coordinator, cam_id, "night_light_sleep", "light_seconds", "mdi:power-sleep"))
-            entities.append(AventNightDurationSensor(
-                coordinator, cam_id, "night_awake", "awake_seconds", "mdi:sleep-off"))
+        add_entities_when_ready(
+            coordinator, async_add_entities, _senseiq_sensors(coordinator, cam_id), entry.async_on_unload
+        )
 
     async_add_entities(entities)
+
+
+def _senseiq_sensors(coordinator: PhilipsAventCoordinator, cam_id: str) -> list:
+    """SenseIQ sensors, grouped by the data point each group needs.
+
+    Only monitors that actually expose a data point get its sensors. DPS 4 may
+    hold a persisted, completed session, so its group depends on the session
+    being decodable rather than active.
+    """
+
+    def night_summary() -> list:
+        # Nightly sleep summary from the SenseIQ cloud aggregate. Accurate,
+        # full-night figures (unlike DPS 4, which resets mid-night). The values
+        # fill in on the first cloud fetch.
+        return [
+            AventNightSleepSensor(coordinator, cam_id),
+            AventNightDurationSensor(coordinator, cam_id, "night_in_bed", "in_bed_seconds", "mdi:bed"),
+            AventNightDurationSensor(coordinator, cam_id, "night_deep_sleep", "deep_seconds", "mdi:sleep"),
+            AventNightDurationSensor(coordinator, cam_id, "night_light_sleep", "light_seconds", "mdi:power-sleep"),
+            AventNightDurationSensor(coordinator, cam_id, "night_awake", "awake_seconds", "mdi:sleep-off"),
+        ]
+
+    return [
+        (
+            lambda dps: senseiq.decode_status(dps.get(DPS_SENSEIQ_STATUS)) is not None,
+            lambda: [AventBreathingSensor(coordinator, cam_id), AventSenseIQStateSensor(coordinator, cam_id)],
+        ),
+        (
+            lambda dps: senseiq.decode_sleep_session(dps.get(DPS_SLEEP_SESSION)) is not None,
+            lambda: [
+                AventSleepStartSensor(coordinator, cam_id),
+                AventSleepDurationSensor(coordinator, cam_id),
+                AventSleepStageSensor(coordinator, cam_id),
+            ],
+        ),
+        (dps_present(DPS_DEVICE_ERRORS), lambda: [AventDeviceErrorsSensor(coordinator, cam_id)]),
+        (dps_present(DPS_SENSEIQ_STATUS), night_summary),
+    ]
 
 
 class AventTemperatureSensor(CoordinatorEntity, SensorEntity):
