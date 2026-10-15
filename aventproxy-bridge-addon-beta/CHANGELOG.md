@@ -3,6 +3,12 @@
 This is the beta card: it follows release candidates of the integration.
 Stay on the stable card unless you are testing an rc.
 
+## 2026.10.1-rc3
+
+The bridge is unchanged from rc1. In the integration, Baby Detected no longer
+stays on after the baby leaves the crib on monitors that push SenseIQ status
+over the LAN. Please report on #74.
+
 ## 2026.10.1-rc2
 
 The bridge is unchanged from rc1. In the integration, SenseIQ entities now
