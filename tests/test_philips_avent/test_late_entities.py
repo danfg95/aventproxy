@@ -1,7 +1,7 @@
 """Tests for entities created when their data first appears (issue #74).
 
-On the SCD923 the SenseIQ data points arrive only as LAN pushes, after the first
-cloud poll, so platforms must be able to add an entity group later than setup.
+A data point can first show up after setup, as a LAN push or on a later cloud
+poll, so platforms must be able to add an entity group later than setup.
 """
 
 from entity import add_entities_when_ready, dps_present

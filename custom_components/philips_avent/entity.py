@@ -52,9 +52,9 @@ def add_entities_when_ready(
     `groups` holds `(ready, build)` pairs: `ready(dps)` decides from the
     coordinator data, `build()` returns the entities. Each group is added at
     most once. The check runs now and again on every coordinator update,
-    because some data never reaches the first cloud poll: on the SCD923 the
-    SenseIQ data points arrive only as LAN pushes (issue #74), so deciding at
-    startup alone left those monitors with no SenseIQ entities at all.
+    because a data point can first show up after setup, as a LAN push or on a
+    later cloud poll, and deciding at startup alone would leave the monitor
+    without those entities until the next restart (issue #74).
 
     The check runs inside the coordinator's listener dispatch, which a LAN push
     triggers, so a group that fails to build is logged and dropped rather than
