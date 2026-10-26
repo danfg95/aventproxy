@@ -1,8 +1,7 @@
-name: "Philips Avent WebRTC Bridge (Addon)"
-description: "WebRTC to RTSP bridge for Philips Avent baby monitors. Stable channel: pick this one unless you are running a beta or rc build of the integration."
+name: "Philips Avent Bridge (local)"
+description: "WebRTC to RTSP bridge for Philips Avent baby monitors, built on this Home Assistant from the source of tag 2026.10.0 (fork danfg95/aventproxy, branch local-build)."
 version: "2026.10.0"
 slug: "aventproxy_bridge"
-image: "ghcr.io/thekoma/aventproxy-bridge"
 url: "https://github.com/thekoma/aventproxy"
 arch:
   - amd64
@@ -33,4 +32,4 @@ boot: "auto"
 environment:
   WAIT_FOR_CONFIG: "true"
 map:
-  - config:rw
+  - config:ro
