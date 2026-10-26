@@ -8,8 +8,21 @@ on the machine from this source instead of pulling the prebuilt image from ghcr.
   (the bridge only reads `/config/philips_avent_bridge_*.json`), name "Philips Avent Bridge (local)".
 - `aventproxy-bridge-addon/avent-webrtc-bridge/`: a copy of `avent-webrtc-bridge/`, where the Dockerfile
   expects it (the upstream release workflow copies it there before building).
-- `aventproxy-bridge-addon/build.yaml`: base `debian:bookworm-slim`, as the upstream release workflow.
+- `aventproxy-bridge-addon/Dockerfile`: the runtime base is fixed in the Dockerfile,
+  `FROM docker.io/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587`
+  (the same index the upstream 2026.10.0 release build resolved), instead of `ARG BUILD_FROM` / `FROM ${BUILD_FROM}`.
+  `build.yaml` is removed.
 - `aventproxy-bridge-addon-beta/` and `-dev/` removed: they pull prebuilt images.
 - `repository.yaml`: this fork. GitHub Actions are disabled on the fork.
 
 Add-on repository URL in Home Assistant: `https://github.com/danfg95/aventproxy#local-build`
+
+## Why there is no build.yaml
+
+Supervisor 2026.10.3 still reads `build.yaml` (it logs that it is deprecated: "Move build parameters into the
+Dockerfile directly"), but it validates each `build_from` image against
+`^([a-zA-Z\-\.:\d{}]+/)*?([\-\w{}]+)/([\-\w{}]+)(:[\.\-\w{}]+)?$`, which needs a `namespace/name` form.
+`debian:bookworm-slim` does not match (`docker.io/library/debian:bookworm-slim` would), so the whole file was
+discarded "using defaults" and `BUILD_FROM` became `ghcr.io/home-assistant/base:latest` (Alpine, no apt-get):
+the first build failed. Without `build.yaml` the Supervisor passes no `BUILD_FROM` and the Dockerfile's own
+`FROM` is used (supervisor/apps/build.py, `_read_build_config` and `base_image`).

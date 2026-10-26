@@ -1,6 +1,0 @@
-# Built by the Supervisor on this machine (no prebuilt image). Same base as the upstream release
-# workflow (debian:bookworm-slim, BUILD_FROM in .github/workflows/release.yml), so run.sh is the
-# container's main process as in the published image (the Home Assistant base images run s6 as PID 1).
-build_from:
-  amd64: debian:bookworm-slim
-  aarch64: debian:bookworm-slim
