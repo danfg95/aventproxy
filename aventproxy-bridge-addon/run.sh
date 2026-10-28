@@ -48,9 +48,27 @@ resolve_rtsp_bind() {
     echo "localhost"
 }
 
-if [ "${WAIT_FOR_CONFIG:-false}" = "true" ]; then
+# The Supervisor always writes /data/options.json, so it only counts as a config
+# when it carries credentials of its own. Otherwise the add-on waits for the
+# integration's file: started before the integration (Home Assistant restarting,
+# a backup), it used to fall through here and exit, and stayed stopped.
+options_usable() {
+    [ -f "$ADDON_CONFIG" ] && [ -n "$(jq -r '.signing_key // empty' "$ADDON_CONFIG" 2>/dev/null)" ]
+}
+
+resolve_config() {
+    find_bridge_config && return 0
+    options_usable && echo "$ADDON_CONFIG" && return 0
+    return 1
+}
+
+if ! CONFIG_PATH=$(resolve_config); then
+    if [ "${WAIT_FOR_CONFIG:-false}" != "true" ]; then
+        echo "ERROR: no bridge config found"
+        exit 1
+    fi
     echo "Waiting for bridge config from HA integration..."
-    while ! find_bridge_config >/dev/null 2>&1 && [ ! -f "$ADDON_CONFIG" ]; do
+    until CONFIG_PATH=$(resolve_config); do
         sleep 5
     done
     echo "Config found!"
@@ -58,16 +76,10 @@ fi
 
 warn_on_extra_configs
 
-FOUND_CONFIG=$(find_bridge_config 2>/dev/null)
-if [ -n "$FOUND_CONFIG" ]; then
-    echo "Using bridge config from HA integration: $FOUND_CONFIG"
-    CONFIG_PATH="$FOUND_CONFIG"
-elif [ -f "$ADDON_CONFIG" ]; then
+if [ "$CONFIG_PATH" = "$ADDON_CONFIG" ]; then
     echo "Using add-on options config"
-    CONFIG_PATH="$ADDON_CONFIG"
 else
-    echo "ERROR: no bridge config found"
-    exit 1
+    echo "Using bridge config from HA integration: $CONFIG_PATH"
 fi
 
 echo "=============================="
@@ -103,6 +115,14 @@ shutdown() {
 trap shutdown TERM INT
 
 while true; do
+    # Again on every start: the integration may have written a newer file meanwhile
+    until NEXT_CONFIG=$(resolve_config); do
+        sleep 5
+    done
+    if [ "$NEXT_CONFIG" != "$CONFIG_PATH" ]; then
+        echo "Using bridge config: $NEXT_CONFIG"
+        CONFIG_PATH="$NEXT_CONFIG"
+    fi
     CONFIG_HASH=$(md5sum "$CONFIG_PATH" 2>/dev/null | cut -d' ' -f1)
 
     avent-webrtc-bridge addon --config "$CONFIG_PATH" --bind "$RTSP_BIND" &
@@ -113,7 +133,7 @@ while true; do
     while kill -0 "$BRIDGE_PID" 2>/dev/null; do
         sleep 10
         NEW_HASH=$(md5sum "$CONFIG_PATH" 2>/dev/null | cut -d' ' -f1)
-        if [ -n "$NEW_HASH" ] && [ "$NEW_HASH" != "$CONFIG_HASH" ]; then
+        if { [ -n "$NEW_HASH" ] && [ "$NEW_HASH" != "$CONFIG_HASH" ]; } || [ "$(resolve_config)" != "$CONFIG_PATH" ]; then
             echo "Config changed, restarting bridge..."
             RESTART_REASON="config"
             kill "$BRIDGE_PID" 2>/dev/null

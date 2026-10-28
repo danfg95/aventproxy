@@ -14,6 +14,9 @@ on the machine from this source instead of pulling the prebuilt image from ghcr.
   `build.yaml` is removed.
 - `aventproxy-bridge-addon-beta/` and `-dev/` removed: they pull prebuilt images.
 - `repository.yaml`: this fork. GitHub Actions are disabled on the fork.
+- `aventproxy-bridge-addon/run.sh`: waits for the integration's bridge config instead of exiting when the add-on
+  starts first (`/data/options.json` only counts when it has a `signing_key`), and looks for the newest config again
+  on every restart of the bridge.
 
 Add-on repository URL in Home Assistant: `https://github.com/danfg95/aventproxy#local-build`
 
