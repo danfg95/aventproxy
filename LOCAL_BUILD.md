@@ -17,6 +17,9 @@ on the machine from this source instead of pulling the prebuilt image from ghcr.
 - `aventproxy-bridge-addon/run.sh`: waits for the integration's bridge config instead of exiting when the add-on
   starts first (`/data/options.json` only counts when it has a `signing_key`), and looks for the newest config again
   on every restart of the bridge.
+- `pkg/rtsp/forwarder.go` (both copies): the camera's video packets are put back in sequence order before they are
+  restamped (late NACK resends were stamped into the next frame: garbage slices, grey smears), a lost one is given up
+  after 100 ms, and each RTSP client gets video only from a keyframe on: when it joins, and again after a loss.
 
 Add-on repository URL in Home Assistant: `https://github.com/danfg95/aventproxy#local-build`
 

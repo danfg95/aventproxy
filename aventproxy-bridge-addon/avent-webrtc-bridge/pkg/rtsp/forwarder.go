@@ -47,12 +47,20 @@ type RTPForwarder struct {
 	// sequence numbers of everything after them.
 	videoSeqOffset uint16
 
+	// The camera's video packets, back in sequence order (see seqOrder).
+	videoOrder seqOrder
+
 	OnBackchannelAudio func(*rtp.Packet)
 }
 
 type RTPClient struct {
 	sessionID     string
 	transportMode TransportMode
+
+	// No video until the next keyframe: a new client would otherwise start
+	// with frames it cannot decode, and after a lost packet the frames that
+	// follow are broken (grey smears) until the next keyframe repairs them.
+	needKey bool
 
 	// UDP transport - Outgoing connections (server -> client)
 	videoConn *net.UDPConn // For sending video to client
@@ -122,6 +130,7 @@ func (rf *RTPForwarder) AddUDPClient(sessionID string, videoRTPPort, audioRTPPor
 	}
 
 	client := &RTPClient{
+		needKey:       true,
 		sessionID:     sessionID,
 		transportMode: TransportUDP,
 		videoRTPPort:  videoRTPPort,
@@ -238,6 +247,7 @@ func (rf *RTPForwarder) AddTCPClient(sessionID string, conn net.Conn, videoRTPCh
 	}
 
 	client := &RTPClient{
+		needKey:             true,
 		sessionID:           sessionID,
 		transportMode:       TransportTCP,
 		tcpConn:             conn,
@@ -327,9 +337,10 @@ func (rf *RTPForwarder) cacheNAL(packet *rtp.Packet, nalType byte) {
 	}
 }
 
-// ForwardVideoPacket restamps an H.264 RTP packet from the camera (one
-// timestamp per frame, sequence numbers shifted past injected packets),
-// injects the cached SPS/PPS ahead of each IDR, and sends it to every client.
+// ForwardVideoPacket puts the camera's H.264 RTP packets back in order, then
+// restamps each one (one timestamp per frame, sequence numbers shifted past
+// injected packets), injects the cached SPS/PPS ahead of each IDR, and sends
+// it to every client.
 func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 	// Write lock: this mutates forwarder state, and forwardVideoData may
 	// remove dead clients from the map.
@@ -337,9 +348,22 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 	defer rf.mutex.Unlock()
 
 	if len(rf.clients) == 0 {
+		rf.videoOrder = seqOrder{}
 		return
 	}
 
+	ordered, lost := rf.videoOrder.push(packet, time.Now())
+	if lost {
+		for _, client := range rf.clients {
+			client.needKey = true
+		}
+	}
+	for _, p := range ordered {
+		rf.forwardOrderedVideo(p)
+	}
+}
+
+func (rf *RTPForwarder) forwardOrderedVideo(packet *rtp.Packet) {
 	packet.Timestamp = rf.videoTs.timestamp(packet.Marker, 90000)
 	packet.SequenceNumber += rf.videoSeqOffset
 
@@ -364,16 +388,22 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 			injected.Timestamp = packet.Timestamp
 			injected.SequenceNumber = packet.SequenceNumber
 			injected.Marker = false
-			rf.forwardVideoData(injected)
+			rf.forwardVideoData(injected, true)
 			packet.SequenceNumber++
 			rf.videoSeqOffset++
 		}
 	}
 
-	rf.forwardVideoData(packet)
+	// A keyframe's access unit starts with its SPS (alone or in a STAP-A) or,
+	// when the camera sends none, with the IDR itself.
+	rf.forwardVideoData(packet, nalType == 5 || nalType == 7 || (nalType == 24 && stapStartsWithSPS(packet)))
 }
 
-func (rf *RTPForwarder) forwardVideoData(packet *rtp.Packet) {
+func stapStartsWithSPS(packet *rtp.Packet) bool {
+	return len(packet.Payload) > 3 && packet.Payload[3]&0x1F == 7
+}
+
+func (rf *RTPForwarder) forwardVideoData(packet *rtp.Packet, keyStart bool) {
 	data, err := packet.Marshal()
 	if err != nil {
 		core.Logger.Error().Err(err).Msg("Error marshaling video RTP packet")
@@ -384,6 +414,13 @@ func (rf *RTPForwarder) forwardVideoData(packet *rtp.Packet) {
 
 	for sessionID, client := range rf.clients {
 		client.lastActivity = time.Now()
+
+		if client.needKey {
+			if !keyStart {
+				continue
+			}
+			client.needKey = false
+		}
 
 		if client.transportMode == TransportUDP {
 			if client.videoConn != nil {
@@ -638,4 +675,74 @@ func rtpTicks(elapsed time.Duration, clockRate int) uint32 {
 	secs := uint64(elapsed / time.Second)
 	frac := uint64(elapsed % time.Second)
 	return uint32(secs*uint64(clockRate) + frac*uint64(clockRate)/uint64(time.Second))
+}
+
+// seqOrder puts the camera's video packets back in sequence order. Over Wi-Fi
+// they arrive out of order, and late when the NACK interceptor gets a lost one
+// resent. The camera's RTP timestamp is constant, so frameClock can only tell
+// frames apart by arrival order: a late fragment was stamped into the next
+// frame, and receivers rebuilt slices from pieces of two frames (garbage slice
+// headers, grey smears, browsers asking for a keyframe again and again).
+// A packet waits up to reorderWait for the ones before it; after that the
+// missing ones count as lost, and if they arrive later they are dropped.
+type seqOrder struct {
+	started bool
+	next    uint16
+	pending map[uint16]orderedPacket
+}
+
+type orderedPacket struct {
+	packet  *rtp.Packet
+	arrived time.Time
+}
+
+const (
+	reorderWait = 100 * time.Millisecond
+	reorderMax  = 512 // packets held at most, about a keyframe's worth
+)
+
+// push takes a packet as it arrives and returns the packets now in order, and
+// whether some were given up as lost to get there.
+func (o *seqOrder) push(packet *rtp.Packet, now time.Time) (ordered []*rtp.Packet, lost bool) {
+	if !o.started {
+		o.started = true
+		o.next = packet.SequenceNumber
+		o.pending = make(map[uint16]orderedPacket)
+	}
+	if int16(packet.SequenceNumber-o.next) < 0 {
+		return nil, false // sent already, or given up as lost
+	}
+	if _, dup := o.pending[packet.SequenceNumber]; !dup {
+		o.pending[packet.SequenceNumber] = orderedPacket{packet, now}
+	}
+	for {
+		for {
+			p, ok := o.pending[o.next]
+			if !ok {
+				break
+			}
+			ordered = append(ordered, p.packet)
+			delete(o.pending, o.next)
+			o.next++
+		}
+		if len(o.pending) == 0 {
+			return ordered, lost
+		}
+		// A gap: wait for it unless the oldest packet behind it has waited long enough.
+		first, oldest := uint16(0), now
+		gap := uint16(0xFFFF)
+		for seq, p := range o.pending {
+			if d := seq - o.next; d < gap {
+				gap, first = d, seq
+			}
+			if p.arrived.Before(oldest) {
+				oldest = p.arrived
+			}
+		}
+		if now.Sub(oldest) < reorderWait && len(o.pending) < reorderMax {
+			return ordered, lost
+		}
+		o.next = first
+		lost = true
+	}
 }
