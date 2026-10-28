@@ -144,14 +144,24 @@ func seqs(packets []*rtp.Packet) []uint16 {
 	return out
 }
 
+func released(rs []releasedPacket) (out []*rtp.Packet, lost []bool) {
+	for _, r := range rs {
+		out = append(out, r.packet)
+		lost = append(lost, r.afterLoss)
+	}
+	return
+}
+
 func TestSeqOrderPutsLatePacketBackInPlace(t *testing.T) {
 	var o seqOrder
 	now := time.Now()
 	var got []*rtp.Packet
 	for _, seq := range []uint16{65534, 0, 65535, 1} { // out of order, across wraparound
-		out, lost := o.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: seq}}, now)
-		if lost {
-			t.Fatalf("seq %d: nothing should be given up as lost", seq)
+		out, lost := released(o.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: seq}}, now))
+		for _, l := range lost {
+			if l {
+				t.Fatalf("seq %d: nothing should be given up as lost", seq)
+			}
 		}
 		got = append(got, out...)
 	}
@@ -164,15 +174,59 @@ func TestSeqOrderGivesUpOnLostPacketAndDropsItLater(t *testing.T) {
 	var o seqOrder
 	now := time.Now()
 	o.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 1}}, now)
-	if out, _ := o.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 3}}, now); len(out) != 0 {
-		t.Fatalf("3 went out before 2 had time to arrive: %v", seqs(out))
+	if out := o.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 3}}, now); len(out) != 0 {
+		t.Fatalf("3 went out before 2 had time to arrive")
 	}
-	out, lost := o.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 4}}, now.Add(reorderWait))
-	if !lost || fmt.Sprint(seqs(out)) != "[3 4]" {
-		t.Fatalf("got %v lost=%v, want [3 4] with 2 lost", seqs(out), lost)
+	out, lost := released(o.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 4}}, now.Add(reorderWait)))
+	if fmt.Sprint(seqs(out), lost) != "[3 4] [true false]" {
+		t.Fatalf("got %v %v, want [3 4] with the loss noted on 3", seqs(out), lost)
 	}
-	if out, _ := o.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 2}}, now.Add(reorderWait)); len(out) != 0 {
-		t.Fatalf("2 arrived after being given up, but went out: %v", seqs(out))
+	if out := o.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 2}}, now.Add(reorderWait)); len(out) != 0 {
+		t.Fatalf("2 arrived after being given up, but went out")
+	}
+}
+
+func TestForwardVideoDropsKeyframeWithLostPacketWhole(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	rf := NewRTPForwarder()
+	if err := rf.AddTCPClient("s1", server, 0, 2, 4); err != nil {
+		t.Fatalf("add client: %v", err)
+	}
+	fu := func(seq uint16, start, end bool) *rtp.Packet { // FU-A fragment of an IDR
+		h := byte(0x05)
+		if start {
+			h |= 0x80
+		}
+		if end {
+			h |= 0x40
+		}
+		return &rtp.Packet{Header: rtp.Header{SequenceNumber: seq, Marker: end}, Payload: []byte{0x7c, h, 0x88}}
+	}
+	done := make(chan []*rtp.Packet)
+	go func() { done <- readInterleaved(t, client, 6) }()
+
+	rf.ForwardVideoPacket(&rtp.Packet{Header: rtp.Header{SequenceNumber: 1}, Payload: []byte{0x67, 0x42}})
+	rf.ForwardVideoPacket(&rtp.Packet{Header: rtp.Header{SequenceNumber: 2}, Payload: []byte{0x68, 0xce}})
+	rf.ForwardVideoPacket(fu(3, true, false))
+	rf.ForwardVideoPacket(fu(5, false, true)) // 4, the middle of the keyframe, is lost
+	time.Sleep(reorderWait + 10*time.Millisecond)
+	// the next keyframe, whole: the only thing the client gets
+	rf.ForwardVideoPacket(&rtp.Packet{Header: rtp.Header{SequenceNumber: 6}, Payload: []byte{0x67, 0x42}})
+	rf.ForwardVideoPacket(&rtp.Packet{Header: rtp.Header{SequenceNumber: 7}, Payload: []byte{0x68, 0xce}})
+	rf.ForwardVideoPacket(fu(8, true, false))
+	rf.ForwardVideoPacket(fu(9, false, true))
+	got := <-done
+	// SPS, PPS, the injected SPS/PPS, then both halves of the second keyframe
+	if got[0].Payload[0] != 0x67 || got[4].Payload[1]&0x80 == 0 || !got[5].Marker {
+		t.Fatalf("got %v, want the second keyframe only", seqs(got))
+	}
+	for _, p := range got {
+		if p.SequenceNumber < 6 { // camera numbers 3-5 (the broken keyframe) must not go out
+			t.Fatalf("part of the broken keyframe went out: %v", seqs(got))
+		}
 	}
 }
 

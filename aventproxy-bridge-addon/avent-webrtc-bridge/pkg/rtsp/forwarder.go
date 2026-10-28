@@ -47,8 +47,11 @@ type RTPForwarder struct {
 	// sequence numbers of everything after them.
 	videoSeqOffset uint16
 
-	// The camera's video packets, back in sequence order (see seqOrder).
-	videoOrder seqOrder
+	// The camera's video packets, back in sequence order (see seqOrder), and
+	// the frame being collected: a frame goes out whole or not at all.
+	videoOrder  seqOrder
+	frame       []*rtp.Packet
+	frameBroken bool
 
 	OnBackchannelAudio func(*rtp.Packet)
 }
@@ -337,10 +340,12 @@ func (rf *RTPForwarder) cacheNAL(packet *rtp.Packet, nalType byte) {
 	}
 }
 
-// ForwardVideoPacket puts the camera's H.264 RTP packets back in order, then
-// restamps each one (one timestamp per frame, sequence numbers shifted past
-// injected packets), injects the cached SPS/PPS ahead of each IDR, and sends
-// it to every client.
+// ForwardVideoPacket puts the camera's H.264 RTP packets back in order and
+// collects them into frames (up to the packet with the marker bit). A frame
+// with a lost packet is dropped whole: sent up to the loss, a keyframe decoded
+// with grey smears below it. Each packet of a complete frame is restamped (one
+// timestamp per frame, sequence numbers shifted past injected packets), the
+// cached SPS/PPS are injected ahead of each IDR, and it goes to every client.
 func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 	// Write lock: this mutates forwarder state, and forwardVideoData may
 	// remove dead clients from the map.
@@ -348,18 +353,29 @@ func (rf *RTPForwarder) ForwardVideoPacket(packet *rtp.Packet) {
 	defer rf.mutex.Unlock()
 
 	if len(rf.clients) == 0 {
-		rf.videoOrder = seqOrder{}
+		rf.videoOrder, rf.frame, rf.frameBroken = seqOrder{}, nil, false
 		return
 	}
 
-	ordered, lost := rf.videoOrder.push(packet, time.Now())
-	if lost {
-		for _, client := range rf.clients {
-			client.needKey = true
+	for _, r := range rf.videoOrder.push(packet, time.Now()) {
+		if r.afterLoss {
+			rf.frameBroken = true
+			for _, client := range rf.clients {
+				client.needKey = true
+			}
 		}
-	}
-	for _, p := range ordered {
-		rf.forwardOrderedVideo(p)
+		rf.frame = append(rf.frame, r.packet)
+		if !r.packet.Marker && len(rf.frame) < maxFramePackets {
+			continue
+		}
+		frame, broken := rf.frame, rf.frameBroken
+		rf.frame, rf.frameBroken = nil, false
+		if broken {
+			continue
+		}
+		for _, p := range frame {
+			rf.forwardOrderedVideo(p)
+		}
 	}
 }
 
@@ -696,37 +712,44 @@ type orderedPacket struct {
 	arrived time.Time
 }
 
+type releasedPacket struct {
+	packet    *rtp.Packet
+	afterLoss bool // packets right before it were given up as lost
+}
+
 const (
-	reorderWait = 100 * time.Millisecond
-	reorderMax  = 512 // packets held at most, about a keyframe's worth
+	reorderWait     = 100 * time.Millisecond
+	reorderMax      = 512  // packets held at most, about a keyframe's worth
+	maxFramePackets = 1024 // a frame without a marker bit goes out anyway
 )
 
-// push takes a packet as it arrives and returns the packets now in order, and
-// whether some were given up as lost to get there.
-func (o *seqOrder) push(packet *rtp.Packet, now time.Time) (ordered []*rtp.Packet, lost bool) {
+// push takes a packet as it arrives and returns the packets now in order.
+func (o *seqOrder) push(packet *rtp.Packet, now time.Time) (ordered []releasedPacket) {
 	if !o.started {
 		o.started = true
 		o.next = packet.SequenceNumber
 		o.pending = make(map[uint16]orderedPacket)
 	}
 	if int16(packet.SequenceNumber-o.next) < 0 {
-		return nil, false // sent already, or given up as lost
+		return nil // sent already, or given up as lost
 	}
 	if _, dup := o.pending[packet.SequenceNumber]; !dup {
 		o.pending[packet.SequenceNumber] = orderedPacket{packet, now}
 	}
+	lost := false
 	for {
 		for {
 			p, ok := o.pending[o.next]
 			if !ok {
 				break
 			}
-			ordered = append(ordered, p.packet)
+			ordered = append(ordered, releasedPacket{p.packet, lost})
+			lost = false
 			delete(o.pending, o.next)
 			o.next++
 		}
 		if len(o.pending) == 0 {
-			return ordered, lost
+			return ordered
 		}
 		// A gap: wait for it unless the oldest packet behind it has waited long enough.
 		first, oldest := uint16(0), now
@@ -740,7 +763,7 @@ func (o *seqOrder) push(packet *rtp.Packet, now time.Time) (ordered []*rtp.Packe
 			}
 		}
 		if now.Sub(oldest) < reorderWait && len(o.pending) < reorderMax {
-			return ordered, lost
+			return ordered
 		}
 		o.next = first
 		lost = true

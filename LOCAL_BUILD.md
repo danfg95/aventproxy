@@ -19,7 +19,8 @@ on the machine from this source instead of pulling the prebuilt image from ghcr.
   on every restart of the bridge.
 - `pkg/rtsp/forwarder.go` (both copies): the camera's video packets are put back in sequence order before they are
   restamped (late NACK resends were stamped into the next frame: garbage slices, grey smears), a lost one is given up
-  after 100 ms, and each RTSP client gets video only from a keyframe on: when it joins, and again after a loss.
+  after 100 ms, a frame goes out only whole (one with a lost packet is dropped, so no keyframe is cut short), and each
+  RTSP client gets video only from a keyframe on: when it joins, and again after a loss.
 
 Add-on repository URL in Home Assistant: `https://github.com/danfg95/aventproxy#local-build`
 
